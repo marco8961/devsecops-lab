@@ -15,13 +15,10 @@ jobs:
     - name: Detectar lenguaje automáticamente
       run: |
         if [ -f "package.json" ]; then
-          echo "Lenguaje detectado: Node.js"
           echo "APP_LANG=nodejs" >> $GITHUB_ENV
         elif [ -f "requirements.txt" ]; then
-          echo "Lenguaje detectado: Python"
           echo "APP_LANG=python" >> $GITHUB_ENV
         elif [ -f "pom.xml" ]; then
-          echo "Lenguaje detectado: Java (Maven)"
           echo "APP_LANG=java" >> $GITHUB_ENV
         else
           echo "No se detectó lenguaje automáticamente."
@@ -31,17 +28,21 @@ jobs:
     - name: Configurar entorno e instalar dependencias
       run: |
         sudo apt update
+
         if [ "$APP_LANG" = "python" ]; then
-          sudo apt install -y python3-venv python3-pip
-          python3 -m venv venv
+          command -v python3 || sudo apt install -y python3
+          command -v pip3 || sudo apt install -y python3-pip
+          [ -d venv ] || python3 -m venv venv
           source venv/bin/activate
           pip install --upgrade pip
           pip install -r requirements.txt
         elif [ "$APP_LANG" = "nodejs" ]; then
-          sudo apt install -y nodejs npm
+          command -v node || sudo apt install -y nodejs
+          command -v npm || sudo apt install -y npm
           npm install
         elif [ "$APP_LANG" = "java" ]; then
-          sudo apt install -y maven default-jdk
+          command -v mvn || sudo apt install -y maven
+          command -v javac || sudo apt install -y default-jdk
           mvn clean install
         fi
 
@@ -53,28 +54,35 @@ jobs:
     - name: Analizar con CodeQL
       uses: github/codeql-action/analyze@v3
 
-    - name: Instalar Trivy (método alternativo estable)
+    - name: Instalar Trivy si no existe
       run: |
-        sudo apt install -y curl rpm
-        curl -sfL https://raw.githubusercontent.com/aquasecurity/trivy/main/contrib/install.sh | sudo sh -s -- -b /usr/local/bin
+        if ! command -v trivy > /dev/null; then
+          sudo apt install -y wget apt-transport-https gnupg lsb-release
+          wget -qO - https://aquasecurity.github.io/trivy-repo/deb/public.key | sudo gpg --dearmor -o /usr/share/keyrings/trivy.gpg
+          echo "deb [signed-by=/usr/share/keyrings/trivy.gpg] https://aquasecurity.github.io/trivy-repo/deb $(lsb_release -sc) main" | sudo tee /etc/apt/sources.list.d/trivy.list
+          sudo apt update
+          sudo apt install -y trivy
+        fi
 
     - name: Ejecutar Trivy (SBOM + SCA)
       run: |
         trivy fs . --exit-code 0 --severity HIGH,CRITICAL
 
-    - name: Descargar OWASP ZAP
+    - name: Descargar ZAP si no existe
       run: |
-        wget https://github.com/zaproxy/zaproxy/releases/download/v2.14.0/ZAP_2.14.0.jar -O zap.jar
+        if [ ! -f "zap.jar" ]; then
+          wget https://github.com/zaproxy/zaproxy/releases/download/v2.13.0/ZAP_2.13.0.jar -O zap.jar
+        fi
 
     - name: Ejecutar la aplicación para escaneo DAST
       run: |
         if [ "$APP_LANG" = "python" ]; then
           source venv/bin/activate
-          nohup python3 app.py > app.log 2>&1 &
+          nohup python3 app.py &
         elif [ "$APP_LANG" = "nodejs" ]; then
-          nohup npm start > app.log 2>&1 &
+          nohup npm start &
         elif [ "$APP_LANG" = "java" ]; then
-          nohup java -jar target/*.jar > app.log 2>&1 &
+          nohup java -jar target/*.jar &
         fi
         sleep 10
 
@@ -83,8 +91,11 @@ jobs:
         java -jar zap.jar -cmd -quickurl http://localhost:5000 -quickout zap_report.html || true
 
     - name: Subir reporte ZAP
-      if: success() || failure()
       uses: actions/upload-artifact@v4
       with:
         name: reporte-zap
         path: zap_report.html
+
+    - name: Limpiar ZAP si no se necesita
+      run: |
+        rm -f zap.jar || true
