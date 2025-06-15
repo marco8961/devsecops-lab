@@ -28,23 +28,28 @@ jobs:
           exit 1
         fi
 
-    - name: Instalar dependencias solo si no están
+    - name: Instalar dependencias del lenguaje
       run: |
-        sudo apt update
-        command -v jq >/dev/null 2>&1 || sudo apt install -y jq
-        command -v wget >/dev/null 2>&1 || sudo apt install -y wget
-        command -v curl >/dev/null 2>&1 || sudo apt install -y curl
         if [ "$APP_LANG" = "python" ]; then
-          command -v pip3 >/dev/null 2>&1 || sudo apt install -y python3-pip python3-venv
+          if ! command -v pip &> /dev/null; then
+            sudo apt update
+            sudo apt install -y python3-venv python3-pip
+          fi
           python3 -m venv venv
           source venv/bin/activate
           pip install --upgrade pip
           pip install -r requirements.txt
         elif [ "$APP_LANG" = "nodejs" ]; then
-          command -v npm >/dev/null 2>&1 || sudo apt install -y nodejs npm
+          if ! command -v npm &> /dev/null; then
+            sudo apt update
+            sudo apt install -y nodejs npm
+          fi
           npm install
         elif [ "$APP_LANG" = "java" ]; then
-          command -v mvn >/dev/null 2>&1 || sudo apt install -y maven default-jdk
+          if ! command -v mvn &> /dev/null; then
+            sudo apt update
+            sudo apt install -y maven default-jdk
+          fi
           mvn clean install
         fi
 
@@ -58,30 +63,20 @@ jobs:
 
     - name: Instalar Trivy
       run: |
-        if ! command -v trivy >/dev/null 2>&1; then
-          sudo apt install -y wget apt-transport-https gnupg lsb-release
-          wget -qO - https://aquasecurity.github.io/trivy-repo/deb/public.key | sudo gpg --dearmor -o /usr/share/keyrings/trivy.gpg
-          echo "deb [signed-by=/usr/share/keyrings/trivy.gpg] https://aquasecurity.github.io/trivy-repo/deb $(lsb_release -sc) main" | sudo tee /etc/apt/sources.list.d/trivy.list
-          sudo apt update
-          sudo apt install -y trivy
-        fi
+        sudo apt install -y wget apt-transport-https gnupg lsb-release
+        wget -qO - https://aquasecurity.github.io/trivy-repo/deb/public.key | sudo gpg --dearmor -o /usr/share/keyrings/trivy.gpg
+        echo "deb [signed-by=/usr/share/keyrings/trivy.gpg] https://aquasecurity.github.io/trivy-repo/deb $(lsb_release -sc) main" | sudo tee /etc/apt/sources.list.d/trivy.list
+        sudo apt update
+        sudo apt install -y trivy
 
     - name: Ejecutar Trivy (SBOM + SCA)
       run: |
         trivy fs . --exit-code 0 --severity HIGH,CRITICAL
 
-    - name: Descargar OWASP ZAP (última versión semanal)
+    - name: Descargar OWASP ZAP
       run: |
-        echo "🔍 Buscando última versión de ZAP..."
-        ZAP_URL=$(curl -s https://api.github.com/repos/zaproxy/zaproxy/releases | jq -r '.[].assets[] | select(.name | test("ZAP_.*\\.jar$")) | .browser_download_url' | head -n 1)
-
-        if [ -z "$ZAP_URL" ]; then
-          echo "❌ No se encontró la URL de ZAP."
-          exit 1
-        fi
-
-        echo "⬇️ Descargando desde: $ZAP_URL"
-        wget -O zap.jar "$ZAP_URL"
+        echo "🔍 Descargando ZAP 2.13.0..."
+        wget https://github.com/zaproxy/zaproxy/releases/download/v2.13.0/ZAP_2.13.0.jar -O zap.jar
 
     - name: Ejecutar la aplicación para escaneo DAST
       run: |
@@ -97,11 +92,10 @@ jobs:
 
     - name: Escaneo DAST con ZAP
       run: |
-        java -jar zap.jar -cmd -quickurl http://localhost:5000 -quickout reporte/zap_report.html || true
+        java -jar zap.jar -cmd -quickurl http://localhost:5000 -quickout zap_report.html || true
 
-    - name: Subir reporte ZAP si existe
-      if: success()
+    - name: Subir reporte ZAP
       uses: actions/upload-artifact@v4
       with:
         name: reporte-zap
-        path: reporte/
+        path: zap_report.html
