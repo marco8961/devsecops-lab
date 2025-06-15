@@ -25,20 +25,22 @@ jobs:
           exit 1
         fi
 
-    - name: Configurar entorno e instalar dependencias
+    - name: Instalar dependencias del lenguaje
       run: |
         if [ "$APP_LANG" = "python" ]; then
-          which python3-venv || sudo apt install -y python3-venv
-          which pip3 || sudo apt install -y python3-pip
+          sudo apt update
+          sudo apt install -y python3-venv python3-pip
           python3 -m venv venv
           source venv/bin/activate
           pip install --upgrade pip
           pip install -r requirements.txt
         elif [ "$APP_LANG" = "nodejs" ]; then
-          which node || sudo apt install -y nodejs npm
+          sudo apt update
+          sudo apt install -y nodejs npm
           npm install
         elif [ "$APP_LANG" = "java" ]; then
-          which mvn || sudo apt install -y maven default-jdk
+          sudo apt update
+          sudo apt install -y maven default-jdk
           mvn clean install
         fi
 
@@ -52,54 +54,53 @@ jobs:
 
     - name: Instalar Trivy
       run: |
-        if ! command -v trivy &> /dev/null; then
-          sudo apt install -y wget apt-transport-https gnupg lsb-release
-          wget -qO - https://aquasecurity.github.io/trivy-repo/deb/public.key | sudo gpg --dearmor -o /usr/share/keyrings/trivy.gpg
-          echo "deb [signed-by=/usr/share/keyrings/trivy.gpg] https://aquasecurity.github.io/trivy-repo/deb $(lsb_release -sc) main" | sudo tee /etc/apt/sources.list.d/trivy.list
-          sudo apt update
-          sudo apt install -y trivy
-        fi
+        sudo apt install -y wget gnupg lsb-release apt-transport-https
+        wget -qO - https://aquasecurity.github.io/trivy-repo/deb/public.key | sudo gpg --dearmor -o /usr/share/keyrings/trivy.gpg
+        echo "deb [signed-by=/usr/share/keyrings/trivy.gpg] https://aquasecurity.github.io/trivy-repo/deb $(lsb_release -sc) main" | sudo tee /etc/apt/sources.list.d/trivy.list
+        sudo apt update
+        sudo apt install -y trivy
 
-    - name: Ejecutar Trivy (SBOM + SCA)
+    - name: Ejecutar Trivy
       run: |
         trivy fs . --exit-code 0 --severity HIGH,CRITICAL
 
-    - name: Descargar OWASP ZAP
+    - name: Descargar OWASP ZAP (último release semanal)
       run: |
         if [ ! -f "zap.jar" ]; then
-          wget https://github.com/zaproxy/zaproxy/releases/download/v2.14.0/ZAP_2.14.0.jar -O zap.jar || {
-            echo "❌ No se pudo descargar ZAP"; exit 1;
+          echo "🔍 Buscando última versión de ZAP..."
+          ZAP_URL=$(curl -s https://github.com/zaproxy/zaproxy/releases/latest | grep -oP 'href="[^"]*ZAP_WEEKLY_D-[^"]*\.jar' | head -n 1 | cut -d'"' -f2)
+          if [ -z "$ZAP_URL" ]; then
+            echo "❌ No se pudo encontrar la URL de ZAP."
+            exit 1
+          fi
+          wget -O zap.jar "https://github.com$ZAP_URL" || {
+            echo "❌ Falló la descarga de ZAP."
+            exit 1
           }
+        else
+          echo "✅ ZAP ya está presente."
         fi
 
     - name: Ejecutar la aplicación para escaneo DAST
       run: |
         if [ "$APP_LANG" = "python" ]; then
           source venv/bin/activate
-          nohup python3 app.py > app.log 2>&1 &
+          nohup python3 app.py &
         elif [ "$APP_LANG" = "nodejs" ]; then
-          nohup npm start > app.log 2>&1 &
+          nohup npm start &
         elif [ "$APP_LANG" = "java" ]; then
-          nohup java -jar target/*.jar > app.log 2>&1 &
+          nohup java -jar target/*.jar &
         fi
-        sleep 15
-        curl -I http://localhost:5000 || echo "⚠️ La app no respondió"
+        sleep 10
 
     - name: Escaneo DAST con ZAP
       run: |
-        java -jar zap.jar -cmd -quickurl http://localhost:5000 -quickout zap_report.html || echo "⚠️ ZAP terminó con errores, pero seguimos."
+        mkdir -p reporte
+        java -jar zap.jar -cmd -quickurl http://localhost:5000 -quickout reporte/zap_report.html || true
 
-    - name: Verificar si el reporte se generó
-      run: |
-        if [ -f "zap_report.html" ]; then
-          echo "✅ Reporte ZAP generado correctamente."
-        else
-          echo "⚠️ No se generó zap_report.html"
-        fi
-
-    - name: Subir reporte ZAP si existe
+    - name: Subir reporte ZAP
       if: success()
       uses: actions/upload-artifact@v4
       with:
         name: reporte-zap
-        path: zap_report.html
+        path: reporte/
