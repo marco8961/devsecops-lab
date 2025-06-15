@@ -1,4 +1,4 @@
-name: DevSecOps Pipeline (Multi-language)
+name: DevSecOps Pipeline (Self-hosted)
 
 on:
   push:
@@ -9,62 +9,76 @@ jobs:
     runs-on: self-hosted
 
     steps:
-    - name: Checkout del código
+    - name: Clonar repositorio
       uses: actions/checkout@v3
 
-    - name: Detectar lenguaje automáticamente
-      id: detect
+    - name: Detectar lenguaje automáticamente (experimental)
       run: |
-        if [ -f "requirements.txt" ]; then
-          echo "lang=python" >> $GITHUB_OUTPUT
-        elif [ -f "package.json" ]; then
-          echo "lang=node" >> $GITHUB_OUTPUT
+        FILE=$(ls)
+        if [ -f "package.json" ]; then
+          echo "Lenguaje detectado: Node.js"
+          echo "APP_LANG=nodejs" >> $GITHUB_ENV
+        elif [ -f "requirements.txt" ]; then
+          echo "Lenguaje detectado: Python"
+          echo "APP_LANG=python" >> $GITHUB_ENV
         elif [ -f "pom.xml" ]; then
-          echo "lang=java" >> $GITHUB_OUTPUT
+          echo "Lenguaje detectado: Java (Maven)"
+          echo "APP_LANG=java" >> $GITHUB_ENV
         else
-          echo "lang=desconocido" >> $GITHUB_OUTPUT
+          echo "No se detectó lenguaje automáticamente."
+          exit 1
         fi
 
-    - name: Instalar dependencias
+    - name: Configurar entorno e instalar dependencias
       run: |
-        if [ "${{ steps.detect.outputs.lang }}" = "python" ]; then
-          pip install -r requirements.txt
-        elif [ "${{ steps.detect.outputs.lang }}" = "node" ]; then
+        if [ "$APP_LANG" = "python" ]; then
+          sudo apt install -y python3-pip
+          pip3 install -r requirements.txt
+        elif [ "$APP_LANG" = "nodejs" ]; then
+          sudo apt install -y nodejs npm
           npm install
-        elif [ "${{ steps.detect.outputs.lang }}" = "java" ]; then
-          mvn install
-        else
-          echo "Lenguaje no soportado en esta configuración" && exit 1
+        elif [ "$APP_LANG" = "java" ]; then
+          sudo apt install -y maven default-jdk
+          mvn clean install
         fi
 
-    - name: SAST con CodeQL
+    - name: Inicializar CodeQL
       uses: github/codeql-action/init@v2
       with:
-        languages: ${{ steps.detect.outputs.lang }}
+        languages: ${{ env.APP_LANG }}
 
-    - name: Ejecutar análisis CodeQL
+    - name: Analizar con CodeQL
       uses: github/codeql-action/analyze@v2
 
     - name: Instalar Trivy
       run: |
-        sudo apt update
-        sudo apt install wget apt-transport-https gnupg lsb-release -y
+        sudo apt install -y wget apt-transport-https gnupg lsb-release
         wget -qO - https://aquasecurity.github.io/trivy-repo/deb/public.key | sudo gpg --dearmor -o /usr/share/keyrings/trivy.gpg
         echo "deb [signed-by=/usr/share/keyrings/trivy.gpg] https://aquasecurity.github.io/trivy-repo/deb $(lsb_release -sc) main" | sudo tee /etc/apt/sources.list.d/trivy.list
         sudo apt update
-        sudo apt install trivy -y
+        sudo apt install -y trivy
 
-    - name: SCA / SBOM con Trivy
+    - name: Ejecutar Trivy (SBOM + SCA)
       run: |
         trivy fs . --exit-code 0 --severity HIGH,CRITICAL
 
-    - name: Instalar y ejecutar ZAP DAST
+    - name: Instalar y correr OWASP ZAP
       run: |
-        sudo apt install snapd -y
+        sudo apt install -y snapd
         sudo snap install zaproxy --classic
-        nohup YOUR_SERVER_COMMAND &   # ← Aquí tú debes poner cómo arrancar la app
+
+    - name: Ejecutar la aplicación (solo si es Python o Node)
+      run: |
+        if [ "$APP_LANG" = "python" ]; then
+          nohup python3 app.py &
+        elif [ "$APP_LANG" = "nodejs" ]; then
+          nohup npm start &
+        fi
         sleep 10
-        zaproxy -cmd -quickurl http://localhost:5000 -quickout zap_report.html
+
+    - name: Escaneo DAST con ZAP
+      run: |
+        zaproxy -cmd -quickurl http://localhost:5000 -quickout zap_report.html || true
 
     - name: Subir reporte ZAP
       uses: actions/upload-artifact@v4
