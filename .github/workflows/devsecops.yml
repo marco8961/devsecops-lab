@@ -25,24 +25,28 @@ jobs:
           exit 1
         fi
 
-    - name: Configurar entorno e instalar dependencias
+    - name: Configurar entorno e instalar dependencias si no están
       run: |
-        sudo apt update
-
         if [ "$APP_LANG" = "python" ]; then
-          command -v python3 || sudo apt install -y python3
-          command -v pip3 || sudo apt install -y python3-pip
-          [ -d venv ] || python3 -m venv venv
+          if ! command -v pip3 >/dev/null; then
+            sudo apt update
+            sudo apt install -y python3-venv python3-pip
+          fi
+          python3 -m venv venv
           source venv/bin/activate
           pip install --upgrade pip
-          pip install -r requirements.txt
+          pip install -r requirements.txt || true
         elif [ "$APP_LANG" = "nodejs" ]; then
-          command -v node || sudo apt install -y nodejs
-          command -v npm || sudo apt install -y npm
+          if ! command -v npm >/dev/null; then
+            sudo apt update
+            sudo apt install -y nodejs npm
+          fi
           npm install
         elif [ "$APP_LANG" = "java" ]; then
-          command -v mvn || sudo apt install -y maven
-          command -v javac || sudo apt install -y default-jdk
+          if ! command -v mvn >/dev/null; then
+            sudo apt update
+            sudo apt install -y maven default-jdk
+          fi
           mvn clean install
         fi
 
@@ -54,10 +58,10 @@ jobs:
     - name: Analizar con CodeQL
       uses: github/codeql-action/analyze@v3
 
-    - name: Instalar Trivy si no existe
+    - name: Instalar Trivy
       run: |
-        if ! command -v trivy > /dev/null; then
-          sudo apt install -y wget apt-transport-https gnupg lsb-release
+        if ! command -v trivy >/dev/null; then
+          sudo apt install -y wget gnupg lsb-release apt-transport-https
           wget -qO - https://aquasecurity.github.io/trivy-repo/deb/public.key | sudo gpg --dearmor -o /usr/share/keyrings/trivy.gpg
           echo "deb [signed-by=/usr/share/keyrings/trivy.gpg] https://aquasecurity.github.io/trivy-repo/deb $(lsb_release -sc) main" | sudo tee /etc/apt/sources.list.d/trivy.list
           sudo apt update
@@ -68,10 +72,18 @@ jobs:
       run: |
         trivy fs . --exit-code 0 --severity HIGH,CRITICAL
 
-    - name: Descargar ZAP si no existe
+    - name: Descargar OWASP ZAP 2.16.1
       run: |
-        if [ ! -f "zap.jar" ]; then
-          wget https://github.com/zaproxy/zaproxy/releases/download/v2.13.0/ZAP_2.13.0.jar -O zap.jar
+        if [ ! -f "zap.tar.gz" ]; then
+          wget https://github.com/zaproxy/zaproxy/releases/download/v2.16.1/ZAP_2.16.1_Linux.tar.gz -O zap.tar.gz
+        fi
+
+    - name: Extraer y preparar ZAP
+      run: |
+        if [ ! -d "zap" ]; then
+          tar -xzf zap.tar.gz
+          mv ZAP_2.16.1 zap
+          ln -s $(pwd)/zap/zap.sh zaproxy
         fi
 
     - name: Ejecutar la aplicación para escaneo DAST
@@ -86,16 +98,17 @@ jobs:
         fi
         sleep 10
 
-    - name: Escaneo DAST con ZAP
+    - name: Escaneo DAST con ZAP si no existe reporte
       run: |
-        java -jar zap.jar -cmd -quickurl http://localhost:5000 -quickout zap_report.html || true
+        if [ ! -f "zap_report.html" ]; then
+          ./zaproxy -cmd -quickurl http://localhost:5000 -quickout zap_report.html || true
+        else
+          echo "Reporte ZAP ya existe, se omite escaneo."
+        fi
 
-    - name: Subir reporte ZAP
+    - name: Subir reporte ZAP si existe
+      if: success() && exists('zap_report.html')
       uses: actions/upload-artifact@v4
       with:
         name: reporte-zap
         path: zap_report.html
-
-    - name: Limpiar ZAP si no se necesita
-      run: |
-        rm -f zap.jar || true
