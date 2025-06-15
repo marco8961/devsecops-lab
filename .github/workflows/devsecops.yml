@@ -12,7 +12,7 @@ jobs:
     - name: Clonar repositorio
       uses: actions/checkout@v3
 
-    - name: Detectar lenguaje automáticamente
+    - name: Detectar lenguaje automáticamente (experimental)
       run: |
         if [ -f "package.json" ]; then
           echo "Lenguaje detectado: Node.js"
@@ -21,11 +21,13 @@ jobs:
           echo "Lenguaje detectado: Python"
           echo "APP_LANG=python" >> $GITHUB_ENV
         elif [ -f "pom.xml" ]; then
-          echo "Lenguaje detectado: Java"
+          echo "Lenguaje detectado: Java (Maven)"
           echo "APP_LANG=java" >> $GITHUB_ENV
         else
-          echo "No se detectó lenguaje compatible."
+          echo "No se detectó lenguaje automáticamente."
           exit 1
+        fi
+
 
     - name: Configurar entorno e instalar dependencias
       run: |
