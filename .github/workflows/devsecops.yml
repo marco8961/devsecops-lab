@@ -15,39 +15,37 @@ jobs:
     - name: Detectar lenguaje automáticamente
       run: |
         if [ -f "package.json" ]; then
+          echo "Lenguaje detectado: Node.js"
           echo "APP_LANG=nodejs" >> $GITHUB_ENV
         elif [ -f "requirements.txt" ]; then
+          echo "Lenguaje detectado: Python"
           echo "APP_LANG=python" >> $GITHUB_ENV
         elif [ -f "pom.xml" ]; then
+          echo "Lenguaje detectado: Java (Maven)"
           echo "APP_LANG=java" >> $GITHUB_ENV
         else
           echo "No se detectó lenguaje automáticamente."
           exit 1
         fi
 
-    - name: Configurar entorno e instalar dependencias si no están
+    - name: Configurar entorno e instalar dependencias si faltan
       run: |
         if [ "$APP_LANG" = "python" ]; then
-          if ! command -v pip3 >/dev/null; then
-            sudo apt update
-            sudo apt install -y python3-venv python3-pip
-          fi
+          command -v python3 || sudo apt install -y python3
+          command -v pip || sudo apt install -y python3-pip
+          command -v virtualenv || sudo apt install -y python3-venv
           python3 -m venv venv
           source venv/bin/activate
           pip install --upgrade pip
           pip install -r requirements.txt || true
         elif [ "$APP_LANG" = "nodejs" ]; then
-          if ! command -v npm >/dev/null; then
-            sudo apt update
-            sudo apt install -y nodejs npm
-          fi
-          npm install
+          command -v node || sudo apt install -y nodejs
+          command -v npm || sudo apt install -y npm
+          npm install || true
         elif [ "$APP_LANG" = "java" ]; then
-          if ! command -v mvn >/dev/null; then
-            sudo apt update
-            sudo apt install -y maven default-jdk
-          fi
-          mvn clean install
+          command -v mvn || sudo apt install -y maven
+          command -v java || sudo apt install -y default-jdk
+          mvn clean install || true
         fi
 
     - name: Inicializar CodeQL
@@ -58,10 +56,10 @@ jobs:
     - name: Analizar con CodeQL
       uses: github/codeql-action/analyze@v3
 
-    - name: Instalar Trivy
+    - name: Instalar Trivy si no está
       run: |
-        if ! command -v trivy >/dev/null; then
-          sudo apt install -y wget gnupg lsb-release apt-transport-https
+        if ! command -v trivy &> /dev/null; then
+          sudo apt install -y wget gnupg lsb-release
           wget -qO - https://aquasecurity.github.io/trivy-repo/deb/public.key | sudo gpg --dearmor -o /usr/share/keyrings/trivy.gpg
           echo "deb [signed-by=/usr/share/keyrings/trivy.gpg] https://aquasecurity.github.io/trivy-repo/deb $(lsb_release -sc) main" | sudo tee /etc/apt/sources.list.d/trivy.list
           sudo apt update
@@ -70,20 +68,12 @@ jobs:
 
     - name: Ejecutar Trivy (SBOM + SCA)
       run: |
-        trivy fs . --exit-code 0 --severity HIGH,CRITICAL
+        trivy fs . --exit-code 0 --severity HIGH,CRITICAL || true
 
-    - name: Descargar OWASP ZAP 2.16.1
+    - name: Descargar OWASP ZAP
       run: |
-        if [ ! -f "zap.tar.gz" ]; then
-          wget https://github.com/zaproxy/zaproxy/releases/download/v2.16.1/ZAP_2.16.1_Linux.tar.gz -O zap.tar.gz
-        fi
-
-    - name: Extraer y preparar ZAP
-      run: |
-        if [ ! -d "zap" ]; then
-          tar -xzf zap.tar.gz
-          mv ZAP_2.16.1 zap
-          ln -s $(pwd)/zap/zap.sh zaproxy
+        if [ ! -f "zap.jar" ]; then
+          wget https://github.com/zaproxy/zaproxy/releases/latest/download/ZAP_WEEKLY_D-2024-05-27.jar -O zap.jar
         fi
 
     - name: Ejecutar la aplicación para escaneo DAST
@@ -98,17 +88,24 @@ jobs:
         fi
         sleep 10
 
-    - name: Escaneo DAST con ZAP si no existe reporte
+    - name: Escaneo DAST con ZAP
       run: |
-        if [ ! -f "zap_report.html" ]; then
-          ./zaproxy -cmd -quickurl http://localhost:5000 -quickout zap_report.html || true
-        else
-          echo "Reporte ZAP ya existe, se omite escaneo."
-        fi
+        java -jar zap.jar -cmd -quickurl http://localhost:5000 -quickout zap_report.html || true
 
     - name: Subir reporte ZAP si existe
-      if: success() && exists('zap_report.html')
+      if: always()
+      run: |
+        if [ -f "zap_report.html" ]; then
+          echo "Se encontró el reporte. Subiendo..."
+          mkdir -p reporte
+          mv zap_report.html reporte/
+        else
+          echo "No se encontró zap_report.html, se omite subida."
+        fi
+
+    - name: Subir artefacto
+      if: always()
       uses: actions/upload-artifact@v4
       with:
         name: reporte-zap
-        path: zap_report.html
+        path: reporte/
