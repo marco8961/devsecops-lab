@@ -1,4 +1,4 @@
-name: DevSecOps CI/CD Pipeline
+name: DevSecOps Pipeline (Self-hosted)
 
 on:
   push:
@@ -7,27 +7,58 @@ on:
     branches: [ main ]
 
 jobs:
-  build:
-    name: Build & Security Tests
-    runs-on: ubuntu-latest
+  devsecops:
+    runs-on: self-hosted
 
     steps:
     - name: Checkout código
       uses: actions/checkout@v3
 
-    - name: Inicializar CodeQL
+    - name: Configurar Python
+      uses: actions/setup-python@v4
+      with:
+        python-version: '3.10'
+
+    - name: Instalar dependencias
+      run: |
+        pip install -r requirements.txt
+
+    - name: Escaneo SAST con CodeQL
       uses: github/codeql-action/init@v2
       with:
-        languages: python  # cambia a python, java, etc.
+        languages: python
 
-    - name: Analizar con CodeQL
+    - name: Análisis CodeQL
       uses: github/codeql-action/analyze@v2
 
-    - name: Escanear dependencias (Trivy)
-      uses: aquasecurity/trivy-action@master
+    - name: Instalar Trivy
+      run: |
+        sudo apt install wget apt-transport-https gnupg lsb-release -y
+        wget -qO - https://aquasecurity.github.io/trivy-repo/deb/public.key | sudo gpg --dearmor -o /usr/share/keyrings/trivy.gpg
+        echo "deb [signed-by=/usr/share/keyrings/trivy.gpg] https://aquasecurity.github.io/trivy-repo/deb $(lsb_release -sc) main" | sudo tee /etc/apt/sources.list.d/trivy.list
+        sudo apt update
+        sudo apt install trivy -y
+
+    - name: Ejecutar Trivy (SCA y SBOM)
+      run: |
+        trivy fs . --exit-code 0 --severity HIGH,CRITICAL
+
+    - name: Instalar OWASP ZAP CLI
+      run: |
+        sudo apt install snapd -y
+        sudo snap install zaproxy --classic
+
+    - name: Ejecutar la aplicación
+      run: |
+        nohup python3 app.py &
+        sleep 10
+
+    - name: Escaneo DAST con ZAP
+      run: |
+        zaproxy -cmd -quickurl http://localhost:5000 -quickout zap_report.html
+
+    - name: Subir reporte ZAP
+      uses: actions/upload-artifact@v4
       with:
-        scan-type: fs
-        scan-ref: .
-        format: table
-        exit-code: 1
-        severity: HIGH,CRITICAL
+        name: reporte-zap
+        path: zap_report.html
