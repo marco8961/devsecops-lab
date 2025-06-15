@@ -2,100 +2,102 @@ name: DevSecOps Pipeline (Self-hosted)
 
 on:
   push:
-    branches: [ main ]
+    branches:
+      - main
 
 jobs:
   devsecops:
     runs-on: self-hosted
 
     steps:
-    - name: Clonar repositorio
-      uses: actions/checkout@v3
+      - name: Clonar repositorio
+        uses: actions/checkout@v3
 
-    - name: Detectar lenguaje automáticamente
-      run: |
-        if [ -f "package.json" ]; then
-          echo "Lenguaje detectado: Node.js"
-          echo "APP_LANG=nodejs" >> $GITHUB_ENV
-        elif [ -f "requirements.txt" ]; then
-          echo "Lenguaje detectado: Python"
-          echo "APP_LANG=python" >> $GITHUB_ENV
-        elif [ -f "pom.xml" ]; then
-          echo "Lenguaje detectado: Java (Maven)"
-          echo "APP_LANG=java" >> $GITHUB_ENV
-        else
-          echo "No se detectó lenguaje automáticamente."
-          exit 1
-        fi
+      - name: Detectar lenguaje automáticamente
+        run: |
+          if [ -f "package.json" ]; then
+            echo "APP_LANG=nodejs" >> $GITHUB_ENV
+          elif [ -f "requirements.txt" ]; then
+            echo "APP_LANG=python" >> $GITHUB_ENV
+          elif [ -f "pom.xml" ]; then
+            echo "APP_LANG=java" >> $GITHUB_ENV
+          else
+            echo "No se detectó lenguaje automáticamente."
+            exit 1
+          fi
 
-    - name: Instalar dependencias del lenguaje
-      run: |
-        if [ "$APP_LANG" = "python" ]; then
-          if ! command -v pip &> /dev/null; then
-            sudo apt update
+      - name: Instalar herramientas esenciales
+        run: |
+          sudo apt update
+          sudo apt install -y wget curl
+
+      - name: Instalar dependencias del lenguaje según APP_LANG
+        run: |
+          if [ "$APP_LANG" = "python" ]; then
             sudo apt install -y python3-venv python3-pip
-          fi
-          python3 -m venv venv
-          source venv/bin/activate
-          pip install --upgrade pip
-          pip install -r requirements.txt
-        elif [ "$APP_LANG" = "nodejs" ]; then
-          if ! command -v npm &> /dev/null; then
-            sudo apt update
+            python3 -m venv venv
+            source venv/bin/activate
+            pip install --upgrade pip
+            pip install -r requirements.txt
+          elif [ "$APP_LANG" = "nodejs" ]; then
             sudo apt install -y nodejs npm
-          fi
-          npm install
-        elif [ "$APP_LANG" = "java" ]; then
-          if ! command -v mvn &> /dev/null; then
-            sudo apt update
+            npm install
+          elif [ "$APP_LANG" = "java" ]; then
             sudo apt install -y maven default-jdk
+            mvn clean install
           fi
-          mvn clean install
-        fi
 
-    - name: Inicializar CodeQL
-      uses: github/codeql-action/init@v3
-      with:
-        languages: ${{ env.APP_LANG }}
+      - name: Inicializar y ejecutar CodeQL (SAST)
+        uses: github/codeql-action/init@v3
+        with:
+          languages: ${{ env.APP_LANG }}
+      - uses: github/codeql-action/analyze@v3
 
-    - name: Analizar con CodeQL
-      uses: github/codeql-action/analyze@v3
+      - name: Instalar Trivy (SBOM + SCA)
+        run: |
+          sudo apt install -y gnupg lsb-release apt-transport-https
+          wget -qO - https://aquasecurity.github.io/trivy-repo/deb/public.key \
+            | sudo gpg --dearmor -o /usr/share/keyrings/trivy.gpg
+          echo "deb [signed-by=/usr/share/keyrings/trivy.gpg] \
+            https://aquasecurity.github.io/trivy-repo/deb $(lsb_release -sc) main" \
+            | sudo tee /etc/apt/sources.list.d/trivy.list
+          sudo apt update
+          sudo apt install -y trivy
+      - name: Ejecutar Trivy
+        run: trivy fs . --exit-code 0 --severity HIGH,CRITICAL || true
 
-    - name: Instalar Trivy
-      run: |
-        sudo apt install -y wget apt-transport-https gnupg lsb-release
-        wget -qO - https://aquasecurity.github.io/trivy-repo/deb/public.key | sudo gpg --dearmor -o /usr/share/keyrings/trivy.gpg
-        echo "deb [signed-by=/usr/share/keyrings/trivy.gpg] https://aquasecurity.github.io/trivy-repo/deb $(lsb_release -sc) main" | sudo tee /etc/apt/sources.list.d/trivy.list
-        sudo apt update
-        sudo apt install -y trivy
+      - name: Descargar OWASP ZAP 2.16.1 (Linux)
+        run: |
+          echo "🔍 Descargando ZAP 2.16.1..."
+          wget https://github.com/zaproxy/zaproxy/releases/download/v2.16.1/ZAP_2.16.1_Linux.tar.gz -O zap.tar.gz
 
-    - name: Ejecutar Trivy (SBOM + SCA)
-      run: |
-        trivy fs . --exit-code 0 --severity HIGH,CRITICAL
+      - name: Extraer ZAP
+        run: |
+          tar -xzf zap.tar.gz
+          mv ZAP_2.16.1 zap
+          ln -sf "$(pwd)/zap/zap.sh" zaproxy
 
-    - name: Descargar OWASP ZAP
-      run: |
-        echo "🔍 Descargando ZAP 2.13.0..."
-        wget https://github.com/zaproxy/zaproxy/releases/download/v2.13.0/ZAP_2.13.0.jar -O zap.jar
+      - name: Ejecutar aplicación para escaneo DAST
+        run: |
+          if [ "$APP_LANG" = "python" ]; then
+            source venv/bin/activate
+            nohup python3 app.py > app.log 2>&1 &
+          elif [ "$APP_LANG" = "nodejs" ]; then
+            nohup npm start > app.log 2>&1 &
+          elif [ "$APP_LANG" = "java" ]; then
+            nohup java -jar target/*.jar > app.log 2>&1 &
+          fi
+          sleep 10
+          curl -I http://localhost:5000 || echo "⚠️ La app no respondió"
 
-    - name: Ejecutar la aplicación para escaneo DAST
-      run: |
-        if [ "$APP_LANG" = "python" ]; then
-          source venv/bin/activate
-          nohup python3 app.py &
-        elif [ "$APP_LANG" = "nodejs" ]; then
-          nohup npm start &
-        elif [ "$APP_LANG" = "java" ]; then
-          nohup java -jar target/*.jar &
-        fi
-        sleep 10
+      - name: Escanear con ZAP (DAST)
+        run: |
+          mkdir -p reporte
+          ./zaproxy -cmd -quickurl http://localhost:5000 -quickout reporte/zap_report.html || true
 
-    - name: Escaneo DAST con ZAP
-      run: |
-        java -jar zap.jar -cmd -quickurl http://localhost:5000 -quickout zap_report.html || true
-
-    - name: Subir reporte ZAP
-      uses: actions/upload-artifact@v4
-      with:
-        name: reporte-zap
-        path: zap_report.html
+      - name: Subir reporte ZAP
+        if: success()
+        uses: actions/upload-artifact@v4
+        with:
+          name: reporte-zap
+          path: reporte/
