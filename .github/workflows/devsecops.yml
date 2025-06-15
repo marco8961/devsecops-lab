@@ -1,4 +1,4 @@
-name: DevSecOps Pipeline (Self-hosted)
+name: DevSecOps Pipeline (Multi-language)
 
 on:
   push:
@@ -9,50 +9,61 @@ jobs:
     runs-on: self-hosted
 
     steps:
-    - name: Checkout código
+    - name: Checkout del código
       uses: actions/checkout@v3
 
-    - name: Configurar Python
-      uses: actions/setup-python@v4
-      with:
-        python-version: '3.10'
+    - name: Detectar lenguaje automáticamente
+      id: detect
+      run: |
+        if [ -f "requirements.txt" ]; then
+          echo "lang=python" >> $GITHUB_OUTPUT
+        elif [ -f "package.json" ]; then
+          echo "lang=node" >> $GITHUB_OUTPUT
+        elif [ -f "pom.xml" ]; then
+          echo "lang=java" >> $GITHUB_OUTPUT
+        else
+          echo "lang=desconocido" >> $GITHUB_OUTPUT
+        fi
 
     - name: Instalar dependencias
       run: |
-        pip install -r requirements.txt
+        if [ "${{ steps.detect.outputs.lang }}" = "python" ]; then
+          pip install -r requirements.txt
+        elif [ "${{ steps.detect.outputs.lang }}" = "node" ]; then
+          npm install
+        elif [ "${{ steps.detect.outputs.lang }}" = "java" ]; then
+          mvn install
+        else
+          echo "Lenguaje no soportado en esta configuración" && exit 1
+        fi
 
-    - name: Inicializar CodeQL
+    - name: SAST con CodeQL
       uses: github/codeql-action/init@v2
       with:
-        languages: python
+        languages: ${{ steps.detect.outputs.lang }}
 
-    - name: Analizar con CodeQL
+    - name: Ejecutar análisis CodeQL
       uses: github/codeql-action/analyze@v2
 
     - name: Instalar Trivy
       run: |
+        sudo apt update
         sudo apt install wget apt-transport-https gnupg lsb-release -y
         wget -qO - https://aquasecurity.github.io/trivy-repo/deb/public.key | sudo gpg --dearmor -o /usr/share/keyrings/trivy.gpg
         echo "deb [signed-by=/usr/share/keyrings/trivy.gpg] https://aquasecurity.github.io/trivy-repo/deb $(lsb_release -sc) main" | sudo tee /etc/apt/sources.list.d/trivy.list
         sudo apt update
         sudo apt install trivy -y
 
-    - name: Ejecutar Trivy
+    - name: SCA / SBOM con Trivy
       run: |
         trivy fs . --exit-code 0 --severity HIGH,CRITICAL
 
-    - name: Instalar ZAP CLI
+    - name: Instalar y ejecutar ZAP DAST
       run: |
         sudo apt install snapd -y
         sudo snap install zaproxy --classic
-
-    - name: Ejecutar la app
-      run: |
-        nohup python3 app.py &
+        nohup YOUR_SERVER_COMMAND &   # ← Aquí tú debes poner cómo arrancar la app
         sleep 10
-
-    - name: Escaneo DAST con ZAP
-      run: |
         zaproxy -cmd -quickurl http://localhost:5000 -quickout zap_report.html
 
     - name: Subir reporte ZAP
