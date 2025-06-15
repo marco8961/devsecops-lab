@@ -12,9 +12,8 @@ jobs:
     - name: Clonar repositorio
       uses: actions/checkout@v3
 
-    - name: Detectar lenguaje automáticamente (experimental)
+    - name: Detectar lenguaje automáticamente
       run: |
-        FILE=$(ls)
         if [ -f "package.json" ]; then
           echo "Lenguaje detectado: Node.js"
           echo "APP_LANG=nodejs" >> $GITHUB_ENV
@@ -22,18 +21,20 @@ jobs:
           echo "Lenguaje detectado: Python"
           echo "APP_LANG=python" >> $GITHUB_ENV
         elif [ -f "pom.xml" ]; then
-          echo "Lenguaje detectado: Java (Maven)"
+          echo "Lenguaje detectado: Java"
           echo "APP_LANG=java" >> $GITHUB_ENV
         else
-          echo "No se detectó lenguaje automáticamente."
+          echo "No se detectó lenguaje compatible."
           exit 1
-        fi
 
     - name: Configurar entorno e instalar dependencias
       run: |
         if [ "$APP_LANG" = "python" ]; then
-          sudo apt install -y python3-pip
-          pip3 install -r requirements.txt
+          sudo apt install -y python3-venv python3-pip
+          python3 -m venv venv
+          source venv/bin/activate
+          pip install --upgrade pip
+          pip install -r requirements.txt
         elif [ "$APP_LANG" = "nodejs" ]; then
           sudo apt install -y nodejs npm
           npm install
@@ -67,12 +68,15 @@ jobs:
         sudo apt install -y snapd
         sudo snap install zaproxy --classic
 
-    - name: Ejecutar la aplicación (solo si es Python o Node)
+    - name: Ejecutar la aplicación para escaneo DAST
       run: |
         if [ "$APP_LANG" = "python" ]; then
+          source venv/bin/activate
           nohup python3 app.py &
         elif [ "$APP_LANG" = "nodejs" ]; then
           nohup npm start &
+        elif [ "$APP_LANG" = "java" ]; then
+          nohup java -jar target/*.jar &
         fi
         sleep 10
 
