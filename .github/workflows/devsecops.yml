@@ -15,53 +15,49 @@ jobs:
     - name: Detectar lenguaje automáticamente
       run: |
         if [ -f "package.json" ]; then
-          echo "Lenguaje detectado: Node.js"
           echo "APP_LANG=nodejs" >> $GITHUB_ENV
         elif [ -f "requirements.txt" ]; then
-          echo "Lenguaje detectado: Python"
           echo "APP_LANG=python" >> $GITHUB_ENV
         elif [ -f "pom.xml" ]; then
-          echo "Lenguaje detectado: Java (Maven)"
           echo "APP_LANG=java" >> $GITHUB_ENV
         else
           echo "No se detectó lenguaje automáticamente."
           exit 1
         fi
 
-    - name: Configurar entorno e instalar dependencias si faltan
+    - name: Instalar dependencias según lenguaje si faltan
       run: |
         if [ "$APP_LANG" = "python" ]; then
-          command -v python3 || sudo apt install -y python3
-          command -v pip || sudo apt install -y python3-pip
-          command -v virtualenv || sudo apt install -y python3-venv
+          command -v pip3 || sudo apt update && sudo apt install -y python3-venv python3-pip
           python3 -m venv venv
           source venv/bin/activate
           pip install --upgrade pip
           pip install -r requirements.txt || true
         elif [ "$APP_LANG" = "nodejs" ]; then
-          command -v node || sudo apt install -y nodejs
-          command -v npm || sudo apt install -y npm
+          command -v npm || sudo apt update && sudo apt install -y nodejs npm
           npm install || true
         elif [ "$APP_LANG" = "java" ]; then
-          command -v mvn || sudo apt install -y maven
-          command -v java || sudo apt install -y default-jdk
+          command -v mvn || sudo apt update && sudo apt install -y maven default-jdk
           mvn clean install || true
         fi
 
-    - name: Inicializar CodeQL
+    - name: Ejecutar CodeQL (SAST)
       uses: github/codeql-action/init@v3
       with:
         languages: ${{ env.APP_LANG }}
-
     - name: Analizar con CodeQL
       uses: github/codeql-action/analyze@v3
 
-    - name: Instalar Trivy si no está
+    - name: Instalar Trivy (si falta, para SBOM/SCA)
       run: |
         if ! command -v trivy &> /dev/null; then
-          sudo apt install -y wget gnupg lsb-release
-          wget -qO - https://aquasecurity.github.io/trivy-repo/deb/public.key | sudo gpg --dearmor -o /usr/share/keyrings/trivy.gpg
-          echo "deb [signed-by=/usr/share/keyrings/trivy.gpg] https://aquasecurity.github.io/trivy-repo/deb $(lsb_release -sc) main" | sudo tee /etc/apt/sources.list.d/trivy.list
+          sudo apt update
+          sudo apt install -y wget gnupg lsb-release apt-transport-https
+          wget -qO - https://aquasecurity.github.io/trivy-repo/deb/public.key \
+            | sudo gpg --dearmor -o /usr/share/keyrings/trivy.gpg
+          echo "deb [signed-by=/usr/share/keyrings/trivy.gpg] \
+            https://aquasecurity.github.io/trivy-repo/deb $(lsb_release -sc) main" \
+            | sudo tee /etc/apt/sources.list.d/trivy.list
           sudo apt update
           sudo apt install -y trivy
         fi
@@ -70,37 +66,42 @@ jobs:
       run: |
         trivy fs . --exit-code 0 --severity HIGH,CRITICAL || true
 
-    - name: Descargar OWASP ZAP
+    - name: Descargar OWASP ZAP 2.16.1 (si no existe)
       run: |
-        if [ ! -f "zap.jar" ]; then
-          wget https://github.com/zaproxy/zaproxy/releases/latest/download/ZAP_WEEKLY_D-2024-05-27.jar -O zap.jar
+        if [ ! -f "zap.tar.gz" ]; then
+          wget https://sourceforge.net/projects/zap.mirror/files/v2.16.1/ZAP_2.16.1_Linux.tar.gz/download -O zap.tar.gz
         fi
 
-    - name: Ejecutar la aplicación para escaneo DAST
+    - name: Extraer y preparar ZAP
+      run: |
+        if [ ! -d "zap" ]; then
+          tar -xzf zap.tar.gz
+          mv ZAP_2.16.1 zap
+          ln -sf "$(pwd)/zap/zap.sh" zaproxy
+        fi
+
+    - name: Levantar la app para DAST
       run: |
         if [ "$APP_LANG" = "python" ]; then
           source venv/bin/activate
-          nohup python3 app.py &
+          nohup python3 app.py > app.log 2>&1 &
         elif [ "$APP_LANG" = "nodejs" ]; then
-          nohup npm start &
+          nohup npm start > app.log 2>&1 &
         elif [ "$APP_LANG" = "java" ]; then
-          nohup java -jar target/*.jar &
+          nohup java -jar target/*.jar > app.log 2>&1 &
         fi
         sleep 10
 
     - name: Escaneo DAST con ZAP
       run: |
-        java -jar zap.jar -cmd -quickurl http://localhost:5000 -quickout zap_report.html || true
+        ./zaproxy -cmd -quickurl http://localhost:5000 -quickout zap_report.html || true
 
-    - name: Subir reporte ZAP si existe
+    - name: Preparar y subir reporte ZAP si existe
       if: always()
       run: |
         if [ -f "zap_report.html" ]; then
-          echo "Se encontró el reporte. Subiendo..."
           mkdir -p reporte
           mv zap_report.html reporte/
-        else
-          echo "No se encontró zap_report.html, se omite subida."
         fi
 
     - name: Subir artefacto
