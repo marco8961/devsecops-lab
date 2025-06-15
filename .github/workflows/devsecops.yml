@@ -15,32 +15,36 @@ jobs:
     - name: Detectar lenguaje automáticamente
       run: |
         if [ -f "package.json" ]; then
+          echo "Lenguaje detectado: Node.js"
           echo "APP_LANG=nodejs" >> $GITHUB_ENV
         elif [ -f "requirements.txt" ]; then
+          echo "Lenguaje detectado: Python"
           echo "APP_LANG=python" >> $GITHUB_ENV
         elif [ -f "pom.xml" ]; then
+          echo "Lenguaje detectado: Java (Maven)"
           echo "APP_LANG=java" >> $GITHUB_ENV
         else
           echo "No se detectó lenguaje automáticamente."
           exit 1
         fi
 
-    - name: Instalar dependencias del lenguaje
+    - name: Instalar dependencias solo si no están
       run: |
+        sudo apt update
+        command -v jq >/dev/null 2>&1 || sudo apt install -y jq
+        command -v wget >/dev/null 2>&1 || sudo apt install -y wget
+        command -v curl >/dev/null 2>&1 || sudo apt install -y curl
         if [ "$APP_LANG" = "python" ]; then
-          sudo apt update
-          sudo apt install -y python3-venv python3-pip
+          command -v pip3 >/dev/null 2>&1 || sudo apt install -y python3-pip python3-venv
           python3 -m venv venv
           source venv/bin/activate
           pip install --upgrade pip
           pip install -r requirements.txt
         elif [ "$APP_LANG" = "nodejs" ]; then
-          sudo apt update
-          sudo apt install -y nodejs npm
+          command -v npm >/dev/null 2>&1 || sudo apt install -y nodejs npm
           npm install
         elif [ "$APP_LANG" = "java" ]; then
-          sudo apt update
-          sudo apt install -y maven default-jdk
+          command -v mvn >/dev/null 2>&1 || sudo apt install -y maven default-jdk
           mvn clean install
         fi
 
@@ -54,32 +58,30 @@ jobs:
 
     - name: Instalar Trivy
       run: |
-        sudo apt install -y wget gnupg lsb-release apt-transport-https
-        wget -qO - https://aquasecurity.github.io/trivy-repo/deb/public.key | sudo gpg --dearmor -o /usr/share/keyrings/trivy.gpg
-        echo "deb [signed-by=/usr/share/keyrings/trivy.gpg] https://aquasecurity.github.io/trivy-repo/deb $(lsb_release -sc) main" | sudo tee /etc/apt/sources.list.d/trivy.list
-        sudo apt update
-        sudo apt install -y trivy
+        if ! command -v trivy >/dev/null 2>&1; then
+          sudo apt install -y wget apt-transport-https gnupg lsb-release
+          wget -qO - https://aquasecurity.github.io/trivy-repo/deb/public.key | sudo gpg --dearmor -o /usr/share/keyrings/trivy.gpg
+          echo "deb [signed-by=/usr/share/keyrings/trivy.gpg] https://aquasecurity.github.io/trivy-repo/deb $(lsb_release -sc) main" | sudo tee /etc/apt/sources.list.d/trivy.list
+          sudo apt update
+          sudo apt install -y trivy
+        fi
 
-    - name: Ejecutar Trivy
+    - name: Ejecutar Trivy (SBOM + SCA)
       run: |
         trivy fs . --exit-code 0 --severity HIGH,CRITICAL
 
-    - name: Descargar OWASP ZAP (último release semanal)
+    - name: Descargar OWASP ZAP (última versión semanal)
       run: |
-        if [ ! -f "zap.jar" ]; then
-          echo "🔍 Buscando última versión de ZAP..."
-          ZAP_URL=$(curl -s https://github.com/zaproxy/zaproxy/releases/latest | grep -oP 'href="[^"]*ZAP_WEEKLY_D-[^"]*\.jar' | head -n 1 | cut -d'"' -f2)
-          if [ -z "$ZAP_URL" ]; then
-            echo "❌ No se pudo encontrar la URL de ZAP."
-            exit 1
-          fi
-          wget -O zap.jar "https://github.com$ZAP_URL" || {
-            echo "❌ Falló la descarga de ZAP."
-            exit 1
-          }
-        else
-          echo "✅ ZAP ya está presente."
+        echo "🔍 Buscando última versión de ZAP..."
+        ZAP_URL=$(curl -s https://api.github.com/repos/zaproxy/zaproxy/releases | jq -r '.[].assets[] | select(.name | test("ZAP_.*\\.jar$")) | .browser_download_url' | head -n 1)
+
+        if [ -z "$ZAP_URL" ]; then
+          echo "❌ No se encontró la URL de ZAP."
+          exit 1
         fi
+
+        echo "⬇️ Descargando desde: $ZAP_URL"
+        wget -O zap.jar "$ZAP_URL"
 
     - name: Ejecutar la aplicación para escaneo DAST
       run: |
@@ -95,10 +97,9 @@ jobs:
 
     - name: Escaneo DAST con ZAP
       run: |
-        mkdir -p reporte
         java -jar zap.jar -cmd -quickurl http://localhost:5000 -quickout reporte/zap_report.html || true
 
-    - name: Subir reporte ZAP
+    - name: Subir reporte ZAP si existe
       if: success()
       uses: actions/upload-artifact@v4
       with:
