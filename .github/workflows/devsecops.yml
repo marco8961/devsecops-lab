@@ -12,22 +12,18 @@ jobs:
     - name: Clonar repositorio
       uses: actions/checkout@v3
 
-    - name: Detectar lenguaje automáticamente (experimental)
+    - name: Detectar lenguaje automáticamente
       run: |
         if [ -f "package.json" ]; then
-          echo "Lenguaje detectado: Node.js"
           echo "APP_LANG=nodejs" >> $GITHUB_ENV
         elif [ -f "requirements.txt" ]; then
-          echo "Lenguaje detectado: Python"
           echo "APP_LANG=python" >> $GITHUB_ENV
         elif [ -f "pom.xml" ]; then
-          echo "Lenguaje detectado: Java (Maven)"
           echo "APP_LANG=java" >> $GITHUB_ENV
         else
           echo "No se detectó lenguaje automáticamente."
           exit 1
         fi
-
 
     - name: Configurar entorno e instalar dependencias
       run: |
@@ -35,8 +31,8 @@ jobs:
           sudo apt install -y python3-venv python3-pip
           python3 -m venv venv
           source venv/bin/activate
-          pip install --upgrade pip
-          pip install -r requirements.txt
+          pip install --break-system-packages --upgrade pip
+          pip install --break-system-packages -r requirements.txt
         elif [ "$APP_LANG" = "nodejs" ]; then
           sudo apt install -y nodejs npm
           npm install
@@ -91,3 +87,9 @@ jobs:
       with:
         name: reporte-zap
         path: zap_report.html
+
+    - name: Limpiar entorno para liberar espacio
+      run: |
+        sudo apt clean
+        sudo rm -rf /var/lib/apt/lists/*
+        rm -rf venv node_modules target
