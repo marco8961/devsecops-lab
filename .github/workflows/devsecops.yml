@@ -21,44 +21,41 @@ jobs:
       run: |
         pip install -r requirements.txt
 
-    # ---------- SAST con CodeQL ----------
     - name: Inicializar CodeQL
       uses: github/codeql-action/init@v2
       with:
         languages: python
 
-    - name: Ejecutar análisis CodeQL
+    - name: Analizar con CodeQL
       uses: github/codeql-action/analyze@v2
 
-    # ---------- SCA y SBOM con Trivy ----------
     - name: Instalar Trivy
       run: |
-        sudo apt update
         sudo apt install wget apt-transport-https gnupg lsb-release -y
         wget -qO - https://aquasecurity.github.io/trivy-repo/deb/public.key | sudo gpg --dearmor -o /usr/share/keyrings/trivy.gpg
         echo "deb [signed-by=/usr/share/keyrings/trivy.gpg] https://aquasecurity.github.io/trivy-repo/deb $(lsb_release -sc) main" | sudo tee /etc/apt/sources.list.d/trivy.list
         sudo apt update
         sudo apt install trivy -y
 
-    - name: Ejecutar Trivy (SCA + SBOM)
+    - name: Ejecutar Trivy
       run: |
-        trivy fs . --format table --exit-code 0 --severity HIGH,CRITICAL
+        trivy fs . --exit-code 0 --severity HIGH,CRITICAL
 
-    # ---------- DAST con OWASP ZAP ----------
-    - name: Instalar OWASP ZAP CLI
+    - name: Instalar ZAP CLI
       run: |
+        sudo apt install snapd -y
         sudo snap install zaproxy --classic
 
-    - name: Ejecutar app Flask
+    - name: Ejecutar la app
       run: |
         nohup python3 app.py &
         sleep 10
 
-    - name: Escanear app con OWASP ZAP
+    - name: Escaneo DAST con ZAP
       run: |
         zaproxy -cmd -quickurl http://localhost:5000 -quickout zap_report.html
 
-    - name: Subir reporte de ZAP
+    - name: Subir reporte ZAP
       uses: actions/upload-artifact@v4
       with:
         name: reporte-zap
