@@ -69,8 +69,8 @@ jobs:
 
     - name: Instalar y correr OWASP ZAP
       run: |
-        sudo apt install -y snapd
-        sudo snap install zaproxy --classic
+        wget https://github.com/zaproxy/zaproxy/releases/download/v2.14.0/ZAP_2.14.0.jar -O zap.jar
+
 
     - name: Ejecutar la aplicación para escaneo DAST
       run: |
@@ -86,7 +86,7 @@ jobs:
 
     - name: Escaneo DAST con ZAP
       run: |
-        zaproxy -cmd -quickurl http://localhost:5000 -quickout zap_report.html || true
+        java -jar zap.jar -cmd -quickurl http://localhost:5000 -quickout zap_report.html || true
 
     - name: Subir reporte ZAP
       uses: actions/upload-artifact@v4
