@@ -1,0 +1,33 @@
+name: DevSecOps CI/CD Pipeline
+
+on:
+  push:
+    branches: [ main ]
+  pull_request:
+    branches: [ main ]
+
+jobs:
+  build:
+    name: Build & Security Tests
+    runs-on: ubuntu-latest
+
+    steps:
+    - name: Checkout código
+      uses: actions/checkout@v3
+
+    - name: Inicializar CodeQL
+      uses: github/codeql-action/init@v2
+      with:
+        languages: python  # cambia a python, java, etc.
+
+    - name: Analizar con CodeQL
+      uses: github/codeql-action/analyze@v2
+
+    - name: Escanear dependencias (Trivy)
+      uses: aquasecurity/trivy-action@master
+      with:
+        scan-type: fs
+        scan-ref: .
+        format: table
+        exit-code: 1
+        severity: HIGH,CRITICAL
