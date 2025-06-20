@@ -10,29 +10,29 @@ jobs:
     steps:
     - name: Ejecutar análisis de seguridad local
       env:
-        GH_TOKEN: ${{ secrets.REPORTES_TOKEN }}  # Token personal con permiso repo
+        GH_TOKEN: ${{ secrets.REPORTES_TOKEN }}
       run: |
         # Directorios base de entrada (apps) y salida (reportes)
         BASE_DIR="/opt/apps-a-revisar"
         REPORT_DIR="/opt/devsecops-reportes"
         mkdir -p "$REPORT_DIR"
 
-        # Limpieza de reportes anteriores
-        rm -rf "$REPORT_DIR"/*
+        # Descargar plantilla HTML de Trivy si no existe
+        TEMPLATE_DIR="/tmp/templates"
+        mkdir -p "$TEMPLATE_DIR"
+        [ -f "$TEMPLATE_DIR/report.tpl" ] || \
+        wget -q -O "$TEMPLATE_DIR/report.tpl" https://raw.githubusercontent.com/aquasecurity/trivy/main/contrib/html.tpl
 
-        # Descargar el template oficial HTML de Trivy
-        mkdir -p /tmp/templates
-        wget -q -O /tmp/templates/report.tpl https://raw.githubusercontent.com/aquasecurity/trivy/main/contrib/html.tpl
-
-        # Recorre cada carpeta de aplicación
+        # Recorrer cada aplicación dentro del directorio base
         for APP in "$BASE_DIR"/*; do
           [ -d "$APP" ] || continue
           APP_NAME=$(basename "$APP")
-          APP_REPORT="$REPORT_DIR/$APP_NAME"
+          TIMESTAMP=$(date +%Y-%m-%d_%H-%M-%S)
+          APP_REPORT="$REPORT_DIR/$APP_NAME/$TIMESTAMP"
           mkdir -p "$APP_REPORT"
           cd "$APP" || continue
 
-          # Analizar Python si existe requirements.txt
+          # Análisis de seguridad estático según lenguaje detectado
           if [ -f "requirements.txt" ]; then
             [ -d "venv" ] || python3 -m venv venv
             source venv/bin/activate
@@ -41,44 +41,64 @@ jobs:
             gh codeql database create "$APP_REPORT/codeql-python-db" --language=python --source-root=. || true
           fi
 
-          # Analizar Node.js si existe package.json
           if [ -f "package.json" ]; then
             [ -d "node_modules" ] || npm install --silent || true
             gh codeql database create "$APP_REPORT/codeql-node-db" --language=javascript --source-root=. || true
           fi
 
-          # Analizar Java si existe pom.xml
           if [ -f "pom.xml" ]; then
             mvn install -DskipTests -q || true
             gh codeql database create "$APP_REPORT/codeql-java-db" --language=java --source-root=. || true
           fi
 
-          # Ejecutar Trivy y generar reporte en HTML
+          # Ejecutar Trivy: generar HTML y JSON
           trivy fs . \
             --format template \
-            --template "@/tmp/templates/report.tpl" \
+            --template "@$TEMPLATE_DIR/report.tpl" \
             --output "$APP_REPORT/trivy-report.html" || true
 
-          # Clonar repositorio de GitHub Pages con los reportes
+          trivy fs . \
+            --format json \
+            --output "$APP_REPORT/trivy-report.json" || true
+
+          # Subir el reporte HTML a GitHub Pages
           cd /tmp
           rm -rf reportes_seguridad
           git clone https://x-access-token:${GH_TOKEN}@github.com/marco8961/reportes_seguridad.git
           cd reportes_seguridad
 
-          # Copiar el HTML dentro de la carpeta de la app
           mkdir -p "$APP_NAME"
           cp "$APP_REPORT/trivy-report.html" "$APP_NAME/"
 
-          # Subir cambios al repositorio (GitHub Pages)
           git config user.name "github-actions"
           git config user.email "ci@github.com"
+          git pull --rebase || true
           git add .
-          git commit -m "Nuevo reporte de seguridad para $APP_NAME" || echo "Sin cambios que subir"
+          git commit -m "Nuevo reporte de seguridad para $APP_NAME ($TIMESTAMP)" || echo "Sin cambios que subir"
           git push
 
-          # Imprimir URL del reporte
+          # Mostrar la URL del reporte HTML
           echo "Reporte disponible en: https://marco8961.github.io/reportes_seguridad/$APP_NAME/trivy-report.html"
         done
 
+        # Generar index.html con enlaces a reportes por aplicación
+        cd /tmp/reportes_seguridad
+        INDEX_FILE="index.html"
+        echo "<!DOCTYPE html><html><head><meta charset='utf-8'><title>Reportes de Seguridad</title></head><body>" > $INDEX_FILE
+        echo "<h1>Listado de Aplicaciones Analizadas</h1>" >> $INDEX_FILE
+        echo "<table border='1' cellpadding='6'><tr><th>Aplicación</th><th>Último Reporte</th></tr>" >> $INDEX_FILE
+
+        for DIR in */; do
+          APP_NAME=$(basename "$DIR")
+          REPORT_URL="https://marco8961.github.io/reportes_seguridad/$APP_NAME/trivy-report.html"
+          echo "<tr><td>$APP_NAME</td><td><a href='$REPORT_URL'>Ver reporte</a></td></tr>" >> $INDEX_FILE
+        done
+
+        echo "</table></body></html>" >> $INDEX_FILE
+
+        git add $INDEX_FILE
+        git commit -m "Actualizar índice de reportes" || echo "Sin cambios en el índice"
+        git push
+
         # Mostrar ruta local como respaldo
-        echo "Reportes locales disponibles en: $REPORT_DIR"
+        echo "Reportes locales almacenados en: $REPORT_DIR"
