@@ -26,7 +26,7 @@ jobs:
         for APP in "$BASE_DIR"/*; do
           [ -d "$APP" ] || continue
           APP_NAME=$(basename "$APP")
-          TIMESTAMP=$(date +%Y-%m-%d_%H-%M-%S)
+          TIMESTAMP=$(TZ=America/Lima date +%Y-%m-%d_%H-%M-%S)
           APP_REPORT="$REPORT_DIR/$APP_NAME/$TIMESTAMP"
           mkdir -p "$APP_REPORT"
           cd "$APP" || continue
