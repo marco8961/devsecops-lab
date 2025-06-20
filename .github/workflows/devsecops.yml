@@ -12,7 +12,7 @@ jobs:
       env:
         GH_TOKEN: ${{ secrets.REPORTES_TOKEN }}  # Token personal con permiso repo
       run: |
-        # Directorios base
+        # Directorios base de entrada (apps) y salida (reportes)
         BASE_DIR="/opt/apps-a-revisar"
         REPORT_DIR="/opt/devsecops-reportes"
         mkdir -p "$REPORT_DIR"
@@ -20,12 +20,11 @@ jobs:
         # Limpieza de reportes anteriores
         rm -rf "$REPORT_DIR"/*
 
-        # Crear entorno virtual para instalar trivy2html
-        python3 -m venv /tmp/trivyenv
-        source /tmp/trivyenv/bin/activate
-        pip install --quiet trivy2html
+        # Descargar el template oficial HTML de Trivy
+        mkdir -p /tmp/templates
+        wget -q -O /tmp/templates/report.tpl https://raw.githubusercontent.com/aquasecurity/trivy/main/contrib/html.tpl
 
-        # Recorrer cada aplicación en apps-a-revisar
+        # Recorre cada carpeta de aplicación
         for APP in "$BASE_DIR"/*; do
           [ -d "$APP" ] || continue
           APP_NAME=$(basename "$APP")
@@ -33,7 +32,7 @@ jobs:
           mkdir -p "$APP_REPORT"
           cd "$APP" || continue
 
-          # Detectar y analizar Python
+          # Analizar Python si existe requirements.txt
           if [ -f "requirements.txt" ]; then
             [ -d "venv" ] || python3 -m venv venv
             source venv/bin/activate
@@ -42,41 +41,44 @@ jobs:
             gh codeql database create "$APP_REPORT/codeql-python-db" --language=python --source-root=. || true
           fi
 
-          # Detectar y analizar Node.js
+          # Analizar Node.js si existe package.json
           if [ -f "package.json" ]; then
             [ -d "node_modules" ] || npm install --silent || true
             gh codeql database create "$APP_REPORT/codeql-node-db" --language=javascript --source-root=. || true
           fi
 
-          # Detectar y analizar Java
+          # Analizar Java si existe pom.xml
           if [ -f "pom.xml" ]; then
             mvn install -DskipTests -q || true
             gh codeql database create "$APP_REPORT/codeql-java-db" --language=java --source-root=. || true
           fi
 
-          # Ejecutar análisis de seguridad con Trivy
-          trivy fs . --format json --output "$APP_REPORT/trivy-report.json" || true
+          # Ejecutar Trivy y generar reporte en HTML
+          trivy fs . \
+            --format template \
+            --template "@/tmp/templates/report.tpl" \
+            --output "$APP_REPORT/trivy-report.html" || true
 
-          # Generar reporte HTML con trivy2html desde entorno virtual
-          /tmp/trivyenv/bin/trivy2html -i "$APP_REPORT/trivy-report.json" -o "$APP_REPORT/trivy-report.html" || true
-
-          # Subir reporte HTML al repositorio de reportes (GitHub Pages)
+          # Clonar repositorio de GitHub Pages con los reportes
           cd /tmp
           rm -rf reportes_seguridad
           git clone https://x-access-token:${GH_TOKEN}@github.com/marco8961/reportes_seguridad.git
           cd reportes_seguridad
 
+          # Copiar el HTML dentro de la carpeta de la app
           mkdir -p "$APP_NAME"
           cp "$APP_REPORT/trivy-report.html" "$APP_NAME/"
 
+          # Subir cambios al repositorio (GitHub Pages)
           git config user.name "github-actions"
           git config user.email "ci@github.com"
           git add .
           git commit -m "Nuevo reporte de seguridad para $APP_NAME" || echo "Sin cambios que subir"
           git push
 
+          # Imprimir URL del reporte
           echo "Reporte disponible en: https://marco8961.github.io/reportes_seguridad/$APP_NAME/trivy-report.html"
         done
 
-        # Ruta local de respaldo
+        # Mostrar ruta local como respaldo
         echo "Reportes locales disponibles en: $REPORT_DIR"
