@@ -10,11 +10,12 @@ jobs:
     steps:
     - name: Ejecutar análisis de seguridad local
       env:
-        GH_TOKEN: ${{ secrets.REPORTES_TOKEN }}
+        GH_TOKEN: ${{ secrets.REPORTES_TOKEN }}  # Token personal con permiso repo
       run: |
         BASE_DIR="/opt/apps-a-revisar"
         REPORT_DIR="/opt/devsecops-reportes"
         mkdir -p "$REPORT_DIR"
+
         rm -rf "$REPORT_DIR"/*
 
         mkdir -p /tmp/templates
@@ -23,12 +24,11 @@ jobs:
         for APP in "$BASE_DIR"/*; do
           [ -d "$APP" ] || continue
           APP_NAME=$(basename "$APP")
-          TIMESTAMP=$(date +"%Y-%m-%d_%H-%M-%S")
+          TIMESTAMP=$(date +%Y-%m-%d_%H-%M-%S)
           APP_REPORT="$REPORT_DIR/$APP_NAME/$TIMESTAMP"
           mkdir -p "$APP_REPORT"
           cd "$APP" || continue
 
-          # SAST y SCA
           if [ -f "requirements.txt" ]; then
             [ -d "venv" ] || python3 -m venv venv
             source venv/bin/activate
@@ -47,65 +47,45 @@ jobs:
             gh codeql database create "$APP_REPORT/codeql-java-db" --language=java --source-root=. || true
           fi
 
-          # Trivy - SCA
           trivy fs . \
             --format template \
             --template "@/tmp/templates/report.tpl" \
             --output "$APP_REPORT/trivy-report.html" || true
 
-          # ZAP - DAST
-          if [ -f "app.py" ]; then
-            nohup python3 app.py > /dev/null 2>&1 &
-            APP_PID=$!
-            sleep 10
-            zaproxy -cmd -quickurl http://localhost:5000 -quickout "$APP_REPORT/zap-report.html" || true
-            kill "$APP_PID"
-          elif [ -f "index.js" ]; then
-            nohup npm start > /dev/null 2>&1 &
-            APP_PID=$!
-            sleep 10
-            zaproxy -cmd -quickurl http://localhost:3000 -quickout "$APP_REPORT/zap-report.html" || true
-            kill "$APP_PID"
+          # Análisis DAST con OWASP ZAP
+          if lsof -i :5000 >/dev/null 2>&1 || lsof -i :3000 >/dev/null 2>&1; then
+            echo "DAST: Ejecutando OWASP ZAP..."
+            docker run -u root --rm -v "$APP_REPORT:/zap/wrk" -t owasp/zap2docker-stable zap-baseline.py \
+              -t http://localhost:5000 \
+              -r dast-report.html || true
+            mv "$APP_REPORT/dast-report.html" "$APP_REPORT/owasp-zap-report.html"
+          else
+            echo "DAST: No se detectó aplicación activa en localhost:5000 o 3000, se omite."
           fi
 
-          # Subir reportes a GitHub Pages
           cd /tmp
           rm -rf reportes_seguridad
           git clone https://x-access-token:${GH_TOKEN}@github.com/marco8961/reportes_seguridad.git
           cd reportes_seguridad
 
-          mkdir -p "$APP_NAME/$TIMESTAMP"
-          cp "$APP_REPORT"/*.html "$APP_NAME/$TIMESTAMP/"
+          mkdir -p "$APP_NAME"
+          cp "$APP_REPORT/trivy-report.html" "$APP_NAME/"
 
-          # Regenerar index.html con enlaces a todos los reportes
-          INDEX_FILE="index.html"
-          echo "<html><head><title>Reportes DevSecOps</title></head><body><h1>Reportes de Seguridad</h1><ul>" > $INDEX_FILE
-
-          for DIR in */; do
-            APP_DIR="${DIR%/}"
-            echo "<li><strong>$APP_DIR</strong><ul>" >> $INDEX_FILE
-            for SUBDIR in "$APP_DIR"/*/; do
-              DATE_DIR="${SUBDIR%/}"
-              DATE_DIR="${DATE_DIR##*/}"
-              if [ -f "$APP_DIR/$DATE_DIR/trivy-report.html" ]; then
-                echo "<li><a href=\"$APP_DIR/$DATE_DIR/trivy-report.html\">Trivy - $DATE_DIR</a></li>" >> $INDEX_FILE
-              fi
-              if [ -f "$APP_DIR/$DATE_DIR/zap-report.html" ]; then
-                echo "<li><a href=\"$APP_DIR/$DATE_DIR/zap-report.html\">ZAP - $DATE_DIR</a></li>" >> $INDEX_FILE
-              fi
-            done
-            echo "</ul></li>" >> $INDEX_FILE
-          done
-
-          echo "</ul></body></html>" >> $INDEX_FILE
+          # Copiar también reporte de ZAP si existe
+          if [ -f "$APP_REPORT/owasp-zap-report.html" ]; then
+            cp "$APP_REPORT/owasp-zap-report.html" "$APP_NAME/"
+          fi
 
           git config user.name "github-actions"
           git config user.email "ci@github.com"
           git add .
-          git commit -m "Reporte $TIMESTAMP para $APP_NAME" || echo "Sin cambios que subir"
+          git commit -m "Nuevo reporte de seguridad para $APP_NAME" || echo "Sin cambios que subir"
           git push
 
-          echo "Reporte disponible: https://marco8961.github.io/reportes_seguridad/$APP_NAME/$TIMESTAMP/"
+          echo "Reporte disponible en: https://marco8961.github.io/reportes_seguridad/$APP_NAME/trivy-report.html"
+          if [ -f "$APP_REPORT/owasp-zap-report.html" ]; then
+            echo "Reporte ZAP: https://marco8961.github.io/reportes_seguridad/$APP_NAME/owasp-zap-report.html"
+          fi
         done
 
         echo "Reportes locales disponibles en: $REPORT_DIR"
