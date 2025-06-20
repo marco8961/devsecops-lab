@@ -12,26 +12,23 @@ jobs:
       env:
         GH_TOKEN: ${{ secrets.REPORTES_TOKEN }}
       run: |
-        # Directorios base de entrada (apps) y salida (reportes)
         BASE_DIR="/opt/apps-a-revisar"
         REPORT_DIR="/opt/devsecops-reportes"
         mkdir -p "$REPORT_DIR"
+        rm -rf "$REPORT_DIR"/*
 
-        # Descargar plantilla HTML de Trivy si no existe
-        TEMPLATE_DIR="/tmp/templates"
-        mkdir -p "$TEMPLATE_DIR"
-        [ -f "$TEMPLATE_DIR/report.tpl" ] || \
-        wget -q -O "$TEMPLATE_DIR/report.tpl" https://raw.githubusercontent.com/aquasecurity/trivy/main/contrib/html.tpl
+        mkdir -p /tmp/templates
+        wget -q -O /tmp/templates/report.tpl https://raw.githubusercontent.com/aquasecurity/trivy/main/contrib/html.tpl
 
         for APP in "$BASE_DIR"/*; do
           [ -d "$APP" ] || continue
           APP_NAME=$(basename "$APP")
-          TIMESTAMP=$(date +%Y-%m-%d_%H-%M-%S)
+          TIMESTAMP=$(date +"%Y-%m-%d_%H-%M-%S")
           APP_REPORT="$REPORT_DIR/$APP_NAME/$TIMESTAMP"
           mkdir -p "$APP_REPORT"
           cd "$APP" || continue
 
-          # Detectar y preparar según lenguaje
+          # SAST y SCA
           if [ -f "requirements.txt" ]; then
             [ -d "venv" ] || python3 -m venv venv
             source venv/bin/activate
@@ -50,57 +47,65 @@ jobs:
             gh codeql database create "$APP_REPORT/codeql-java-db" --language=java --source-root=. || true
           fi
 
-          # Generar reporte HTML y JSON con Trivy
+          # Trivy - SCA
           trivy fs . \
             --format template \
-            --template "@$TEMPLATE_DIR/report.tpl" \
+            --template "@/tmp/templates/report.tpl" \
             --output "$APP_REPORT/trivy-report.html" || true
 
-          trivy fs . \
-            --format json \
-            --output "$APP_REPORT/trivy-report.json" || true
+          # ZAP - DAST
+          if [ -f "app.py" ]; then
+            nohup python3 app.py > /dev/null 2>&1 &
+            APP_PID=$!
+            sleep 10
+            zaproxy -cmd -quickurl http://localhost:5000 -quickout "$APP_REPORT/zap-report.html" || true
+            kill "$APP_PID"
+          elif [ -f "index.js" ]; then
+            nohup npm start > /dev/null 2>&1 &
+            APP_PID=$!
+            sleep 10
+            zaproxy -cmd -quickurl http://localhost:3000 -quickout "$APP_REPORT/zap-report.html" || true
+            kill "$APP_PID"
+          fi
 
-          # Clonar el repo de reportes
+          # Subir reportes a GitHub Pages
           cd /tmp
           rm -rf reportes_seguridad
           git clone https://x-access-token:${GH_TOKEN}@github.com/marco8961/reportes_seguridad.git
           cd reportes_seguridad
 
-          # Copiar historial con timestamp
           mkdir -p "$APP_NAME/$TIMESTAMP"
-          cp "$APP_REPORT/"* "$APP_NAME/$TIMESTAMP/"
+          cp "$APP_REPORT"/*.html "$APP_NAME/$TIMESTAMP/"
 
-          # Sobrescribir último HTML visible
-          cp "$APP_REPORT/trivy-report.html" "$APP_NAME/trivy-report.html"
+          # Regenerar index.html con enlaces a todos los reportes
+          INDEX_FILE="index.html"
+          echo "<html><head><title>Reportes DevSecOps</title></head><body><h1>Reportes de Seguridad</h1><ul>" > $INDEX_FILE
+
+          for DIR in */; do
+            APP_DIR="${DIR%/}"
+            echo "<li><strong>$APP_DIR</strong><ul>" >> $INDEX_FILE
+            for SUBDIR in "$APP_DIR"/*/; do
+              DATE_DIR="${SUBDIR%/}"
+              DATE_DIR="${DATE_DIR##*/}"
+              if [ -f "$APP_DIR/$DATE_DIR/trivy-report.html" ]; then
+                echo "<li><a href=\"$APP_DIR/$DATE_DIR/trivy-report.html\">Trivy - $DATE_DIR</a></li>" >> $INDEX_FILE
+              fi
+              if [ -f "$APP_DIR/$DATE_DIR/zap-report.html" ]; then
+                echo "<li><a href=\"$APP_DIR/$DATE_DIR/zap-report.html\">ZAP - $DATE_DIR</a></li>" >> $INDEX_FILE
+              fi
+            done
+            echo "</ul></li>" >> $INDEX_FILE
+          done
+
+          echo "</ul></body></html>" >> $INDEX_FILE
 
           git config user.name "github-actions"
           git config user.email "ci@github.com"
-          git pull --rebase || true
           git add .
-          git commit -m "Nuevo reporte para $APP_NAME ($TIMESTAMP)" || echo "Sin cambios"
+          git commit -m "Reporte $TIMESTAMP para $APP_NAME" || echo "Sin cambios que subir"
           git push
 
-          echo "Reporte disponible en: https://marco8961.github.io/reportes_seguridad/$APP_NAME/trivy-report.html"
+          echo "Reporte disponible: https://marco8961.github.io/reportes_seguridad/$APP_NAME/$TIMESTAMP/"
         done
 
-        # Crear índice HTML de reportes
-        cd /tmp/reportes_seguridad
-        INDEX_FILE="index.html"
-        echo "<!DOCTYPE html><html><head><meta charset='utf-8'><title>Reportes de Seguridad</title></head><body>" > $INDEX_FILE
-        echo "<h1>Listado de Aplicaciones Analizadas</h1>" >> $INDEX_FILE
-        echo "<table border='1' cellpadding='6'><tr><th>Aplicación</th><th>Última Fecha</th><th>Ver Reporte</th></tr>" >> $INDEX_FILE
-
-        for APP_DIR in */; do
-          APP_NAME=$(basename "$APP_DIR")
-          LAST_DATE=$(ls -td "$APP_NAME"/*/ 2>/dev/null | head -n1 | xargs basename)
-          REPORT_URL="https://marco8961.github.io/reportes_seguridad/$APP_NAME/trivy-report.html"
-          echo "<tr><td>$APP_NAME</td><td>$LAST_DATE</td><td><a href='$REPORT_URL'>Ver reporte</a></td></tr>" >> $INDEX_FILE
-        done
-
-        echo "</table></body></html>" >> $INDEX_FILE
-
-        git add $INDEX_FILE
-        git commit -m "Actualizar índice con fechas de último análisis" || echo "Sin cambios en índice"
-        git push
-
-        echo "Reportes locales almacenados en: $REPORT_DIR"
+        echo "Reportes locales disponibles en: $REPORT_DIR"
