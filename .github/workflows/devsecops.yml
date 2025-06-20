@@ -8,26 +8,32 @@ jobs:
     runs-on: self-hosted
 
     steps:
-    - name: 🧪 Ejecutar análisis de seguridad local
+    - name: Ejecutar análisis de seguridad local
+      env:
+        GH_TOKEN: ${{ secrets.REPORTES_TOKEN }}  # Token personal para subir reportes a GitHub Pages
       run: |
+        # Directorios de entrada (apps) y salida (reportes)
         BASE_DIR="/opt/apps-a-revisar"
         REPORT_DIR="/opt/devsecops-reportes"
         mkdir -p "$REPORT_DIR"
 
-        echo "🧹 Limpiando reportes anteriores..."
+        # Limpia reportes anteriores
         rm -rf "$REPORT_DIR"/*
 
+        # Instala herramienta para convertir JSON a HTML
+        pip install --quiet trivy2html
+
+        # Recorre cada carpeta de aplicación
         for APP in "$BASE_DIR"/*; do
           [ -d "$APP" ] || continue
           APP_NAME=$(basename "$APP")
           APP_REPORT="$REPORT_DIR/$APP_NAME"
           mkdir -p "$APP_REPORT"
 
-          echo "🚀 Analizando: $APP_NAME"
           cd "$APP" || continue
 
+          # Detecta y analiza aplicaciones Python
           if [ -f "requirements.txt" ]; then
-            echo "🔍 Python detectado"
             [ -d "venv" ] || python3 -m venv venv
             source venv/bin/activate
             pip install --quiet -r requirements.txt || true
@@ -35,23 +41,44 @@ jobs:
             gh codeql database create "$APP_REPORT/codeql-python-db" --language=python --source-root=. || true
           fi
 
+          # Detecta y analiza aplicaciones Node.js
           if [ -f "package.json" ]; then
-            echo "🔍 Node.js detectado"
             [ -d "node_modules" ] || npm install --silent || true
             gh codeql database create "$APP_REPORT/codeql-node-db" --language=javascript --source-root=. || true
           fi
 
+          # Detecta y analiza aplicaciones Java
           if [ -f "pom.xml" ]; then
-            echo "🔍 Java detectado"
             mvn install -DskipTests -q || true
             gh codeql database create "$APP_REPORT/codeql-java-db" --language=java --source-root=. || true
           fi
 
-          echo "🔒 Ejecutando Trivy..."
+          # Ejecuta análisis de seguridad estático (SCA) con Trivy
           trivy fs . --format json --output "$APP_REPORT/trivy-report.json" || true
 
-          echo "✅ Análisis finalizado para $APP_NAME"
-          echo "--------------------------------------"
+          # Convierte el reporte JSON a HTML
+          trivy2html -i "$APP_REPORT/trivy-report.json" -o "$APP_REPORT/trivy-report.html" || true
+
+          # Sube el reporte HTML al repositorio de reportes (GitHub Pages)
+          cd /tmp
+          rm -rf reportes-seguridad
+          git clone https://x-access-token:${GH_TOKEN}@github.com/tuusuario/reportes-seguridad.git
+          cd reportes-seguridad
+
+          # Crea carpeta por app y copia el reporte HTML
+          mkdir -p "$APP_NAME"
+          cp "$APP_REPORT/trivy-report.html" "$APP_NAME/"
+
+          # Configura y realiza commit/push al repositorio de reportes
+          git config user.name "github-actions"
+          git config user.email "ci@github.com"
+          git add .
+          git commit -m "Nuevo reporte de seguridad para $APP_NAME" || echo "Sin cambios que subir"
+          git push
+
+          # Indica URL final del reporte publicado
+          echo "Reporte disponible en: https://marco8961.github.io/reportes_seguridad/$APP_NAME/trivy-report.html"
         done
 
-        echo "📂 Todos los reportes están en: $REPORT_DIR"
+        # Ruta local donde también se guardan los reportes
+        echo "Reportes locales disponibles en: $REPORT_DIR"
