@@ -100,24 +100,19 @@ jobs:
         done
 
         # Crear índice HTML de reportes
+        # Crear índice HTML de reportes
         cd /tmp/reportes_seguridad
         INDEX_FILE="index.html"
-        echo "<!DOCTYPE html><html><head><meta charset='utf-8'><title>Resumen de Reportes de Seguridad</title></head><body>" > $INDEX_FILE
-        echo "<h1>Resumen de Aplicaciones Analizadas</h1>" >> $INDEX_FILE
-        echo "<table border='1' cellpadding='6'>" >> $INDEX_FILE
-        echo "<tr><th>Aplicación</th><th>Última Fecha</th><th>SAST</th><th>SCA/SBOM</th><th>DAST</th><th>Reporte</th></tr>" >> $INDEX_FILE
+        echo "<!DOCTYPE html><html><head><meta charset='utf-8'><title>Reportes de Seguridad</title></head><body>" > $INDEX_FILE
+        echo "<h1>Listado de Aplicaciones Analizadas</h1>" >> $INDEX_FILE
+        echo "<table border='1' cellpadding='6'><tr><th>Aplicación</th><th>Última Fecha</th><th>Ver Reporte</th></tr>" >> $INDEX_FILE
         
         for APP_DIR in */; do
           APP_NAME=$(basename "$APP_DIR")
           LAST_DATE=$(ls -td "$APP_NAME"/*/ 2>/dev/null | head -n1 | xargs basename)
-        
-          # Verificar si existen reportes
-          HAS_SAST=$(ls "$APP_NAME/$LAST_DATE" 2>/dev/null | grep -qi codeql && echo "✔️" || echo "❌")
-          HAS_SCA=$(ls "$APP_NAME/$LAST_DATE" 2>/dev/null | grep -q trivy-report.json && echo "✔️" || echo "❌")
-          HAS_DAST=$(ls "$APP_NAME/$LAST_DATE" 2>/dev/null | grep -q zap-report.html && echo "✔️" || echo "❌")
           REPORT_URL="https://marco8961.github.io/reportes_seguridad/$APP_NAME/trivy-report.html"
-        
-          echo "<tr><td>$APP_NAME</td><td>$LAST_DATE</td><td>$HAS_SAST</td><td>$HAS_SCA</td><td>$HAS_DAST</td><td><a href='$REPORT_URL'>Ver reporte</a></td></tr>" >> $INDEX_FILE
+          echo "<tr><td>$APP_NAME</td><td>$LAST_DATE</td><td><a href='$REPORT_URL'>Ver reporte</a></td></tr>" >> $INDEX_FILE
         done
         
         echo "</table></body></html>" >> $INDEX_FILE
+
